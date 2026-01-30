@@ -350,19 +350,20 @@
             <div class="grid grid-cols-1 lg:grid-cols-4 gap-6">
                 <!-- Top Queries Table -->
                 <div
-                    class="bg-white dark:bg-slate-card border border-slate-200 dark:border-slate-800 rounded-xl shadow-sm lg:col-span-2 flex flex-col overflow-hidden">
+                    class="bg-white dark:bg-slate-card border border-slate-200 dark:border-slate-800 rounded-xl shadow-sm lg:col-span-2 flex flex-col overflow-hidden h-[480px]">
                     <div
-                        class="px-6 py-5 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center bg-slate-50/50 dark:bg-slate-900/50">
+                        class="px-6 py-5 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center bg-slate-50/50 dark:bg-slate-900/50 shrink-0">
                         <h4 class="font-bold flex items-center gap-2">
                             <span class="material-symbols-outlined text-primary">format_list_bulleted</span>
                             Top Queries
                         </h4>
                     </div>
-                    <div class="overflow-x-auto">
+                    <div class="overflow-x-auto flex-1 overflow-y-auto">
                         <table class="w-full text-left">
                             <thead
-                                class="text-[10px] uppercase font-bold text-slate-400 border-b border-slate-100 dark:border-slate-800">
+                                class="text-[10px] uppercase font-bold text-slate-400 border-b border-slate-100 dark:border-slate-800 sticky top-0 bg-white dark:bg-slate-card z-10">
                                 <tr>
+                                    <th class="px-6 py-4 w-12 text-slate-300 dark:text-slate-600">#</th>
                                     <th class="px-6 py-4">Query</th>
                                     <th class="px-6 py-4 text-center">Count</th>
                                 </tr>
@@ -377,9 +378,9 @@
 
                 <!-- Pending Feedback Review -->
                 <div
-                    class="bg-white dark:bg-slate-card border border-slate-200 dark:border-slate-800 rounded-xl shadow-sm lg:col-span-2 flex flex-col">
+                    class="bg-white dark:bg-slate-card border border-slate-200 dark:border-slate-800 rounded-xl shadow-sm lg:col-span-2 flex flex-col h-[480px]">
                     <div
-                        class="px-6 py-5 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center bg-slate-50/50 dark:bg-slate-900/50">
+                        class="px-6 py-5 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center bg-slate-50/50 dark:bg-slate-900/50 shrink-0">
                         <div class="flex items-center gap-2">
                             <h4 class="font-bold">Reviews</h4>
                             <span id="pending-badge"
@@ -387,7 +388,7 @@
                                 NEW</span>
                         </div>
                     </div>
-                    <div id="pending-feedback-list" class="flex-1 overflow-y-auto max-h-[400px]">
+                    <div id="pending-feedback-list" class="flex-1 overflow-y-auto">
                         <div class="divide-y divide-slate-100 dark:divide-slate-800">
                             <!-- Populated by JS -->
                         </div>
@@ -582,44 +583,111 @@
                 labelsDiv.innerHTML = '';
 
                 if (data.response_time_trend && data.response_time_trend.length > 0) {
-                    const maxMs = Math.max(...data.response_time_trend.map(d => d.avg_ms), 100);
-                    const barCount = data.response_time_trend.length;
+                    const trendData = data.response_time_trend;
+                    const maxMs = Math.max(...trendData.map(d => d.avg_ms)) * 1.1 || 100; // 10% buffering
 
-                    data.response_time_trend.forEach((item, idx) => {
-                        const heightPercent = (item.avg_ms / maxMs) * 100;
-                        const barColor = item.avg_ms > 3000 ? 'bg-red-400' :
-                            item.avg_ms > 2000 ? 'bg-amber-400' : 'bg-primary';
+                    // dimensions
+                    const width = chartDiv.clientWidth;
+                    const height = chartDiv.clientHeight;
+                    const padding = 10;
+                    const contentWidth = width - (padding * 2);
+                    const contentHeight = height - (padding * 2);
 
-                        chartDiv.innerHTML += `
-                            <div class="flex-1 flex flex-col items-center group cursor-pointer" title="${item.hour}: ${formatTime(item.avg_ms)} (${item.count} queries)">
-                                <div class="w-full ${barColor} rounded-t transition-all hover:opacity-80" 
-                                     style="height: ${heightPercent}%; min-height: 4px;"></div>
-                            </div>
-                        `;
+                    // Scale helpers
+                    const getX = (i) => padding + (i / (trendData.length - 1 || 1)) * contentWidth;
+                    const getY = (ms) => height - padding - ((ms / maxMs) * contentHeight);
 
-                        // Show every 3rd label or so to avoid crowding
-                        if (idx === 0 || idx === barCount - 1 || idx % Math.ceil(barCount / 4) === 0) {
-                            labelsDiv.innerHTML += `<span>${item.hour}</span>`;
+                    // Generate Path
+                    let d = `M ${getX(0)} ${getY(trendData[0].avg_ms)}`;
+                    trendData.forEach((item, i) => {
+                        if (i === 0) return;
+                        // Simple curve interpolation could go here, but straight lines for now
+                        d += ` L ${getX(i)} ${getY(item.avg_ms)}`;
+                    });
+
+                    // Create Gradient
+                    const gradientId = 'chartGradient';
+                    const areaPathD = d + ` L ${getX(trendData.length - 1)} ${height - padding} L ${getX(0)} ${height - padding} Z`;
+
+                    // SVG Construction
+                    const svg = `
+                        <svg width="100%" height="100%" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
+                            <defs>
+                                <linearGradient id="${gradientId}" x1="0" x2="0" y1="0" y2="1">
+                                    <stop offset="0%" stop-color="var(--color-primary)" stop-opacity="0.2"/>
+                                    <stop offset="100%" stop-color="var(--color-primary)" stop-opacity="0"/>
+                                </linearGradient>
+                            </defs>
+                            
+                            <!-- Area fill -->
+                            <path d="${areaPathD}" fill="url(#${gradientId})" stroke="none" />
+                            
+                            <!-- Line -->
+                            <path d="${d}" fill="none" stroke="var(--color-primary)" stroke-width="2" stroke-linejoin="round" />
+                            
+                            <!-- Points -->
+                            ${trendData.map((item, i) => `
+                                <circle cx="${getX(i)}" cy="${getY(item.avg_ms)}" r="3" 
+                                    fill="var(--color-primary)" stroke="white" stroke-width="1.5"
+                                    class="hover:scale-150 transition-transform origin-center cursor-pointer">
+                                    <title>${item.hour}: ${formatTime(item.avg_ms)} (${item.count} queries)</title>
+                                </circle>
+                            `).join('')}
+                        </svg>
+                    `;
+
+                    chartDiv.innerHTML = svg;
+
+                    // Labels
+                    const labelCount = 5;
+                    const step = Math.ceil(trendData.length / labelCount);
+                    trendData.forEach((item, i) => {
+                        if (i % step === 0 || i === trendData.length - 1) {
+                            const leftPos = (i / (trendData.length - 1)) * 100;
+                            const anchor = i === 0 ? 'flex-start' : i === trendData.length - 1 ? 'flex-end' : 'center';
+
+                            const span = document.createElement('span');
+                            span.textContent = item.hour;
+                            span.style.position = 'absolute';
+                            span.style.left = `${leftPos}%`;
+                            span.style.transform = i === 0 ? '' : i === trendData.length - 1 ? 'translateX(-100%)' : 'translateX(-50%)';
+                            labelsDiv.appendChild(span);
                         }
                     });
+                    // Make labels container relative for absolute positioning of children
+                    labelsDiv.classList.remove('justify-between');
+                    labelsDiv.style.position = 'relative';
+                    labelsDiv.style.height = '20px';
                 } else {
                     chartDiv.innerHTML = '<p class="text-sm text-slate-500 text-center w-full py-8">No trend data yet</p>';
                 }
 
                 // Top queries
+                // Top queries
                 const tbody = document.getElementById('top-queries-body');
                 tbody.innerHTML = '';
-                for (const item of data.top_queries.slice(0, 10)) {
+                const maxCount = data.top_queries.length > 0 ? data.top_queries[0].count : 1;
+
+                data.top_queries.slice(0, 10).forEach((item, index) => {
+                    const percent = (item.count / maxCount) * 100;
                     tbody.innerHTML += `
-                        <tr class="hover:bg-slate-50 dark:hover:bg-slate-900/40 transition-colors">
-                            <td class="px-6 py-4 font-medium max-w-md truncate">"${escapeHtml(item.query)}"</td>
-                            <td class="px-6 py-4 text-center">${item.count}</td>
+                        <tr class="group hover:bg-slate-50 dark:hover:bg-slate-900/40 transition-colors border-b border-slate-50 dark:border-slate-800/50">
+                            <td class="px-6 py-4 w-12 text-xs font-bold text-slate-400">#${index + 1}</td>
+                            <td class="px-6 py-4">
+                                <div class="font-mono text-xs text-slate-600 dark:text-slate-300 truncate max-w-sm mb-1.5" title="${escapeHtml(item.query)}">
+                                    "${escapeHtml(item.query)}"
+                                </div>
+                                <div class="w-full bg-slate-100 dark:bg-slate-800 h-1.5 rounded-full overflow-hidden max-w-[200px]">
+                                    <div class="bg-primary h-full rounded-full" style="width: ${percent}%"></div>
+                                </div>
+                            </td>
+                            <td class="px-6 py-4 text-center font-bold text-slate-700 dark:text-slate-200">${item.count}</td>
                         </tr>
                     `;
-                }
+                });
 
                 if (data.top_queries.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="2" class="px-6 py-8 text-center text-slate-500">No queries yet</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="3" class="px-6 py-8 text-center text-slate-500">No queries yet</td></tr>';
                 }
 
                 updateTimestamp();
@@ -640,28 +708,51 @@
                 list.innerHTML = '';
 
                 if (data.length === 0) {
-                    list.innerHTML = '<div class="p-6 text-center text-slate-500 text-sm">No pending feedback</div>';
+                    list.innerHTML = `
+                        <div class="flex flex-col items-center justify-center p-8 text-center h-full">
+                            <div class="size-12 bg-green-500/10 text-green-500 rounded-full flex items-center justify-center mb-3">
+                                <span class="material-symbols-outlined">check</span>
+                            </div>
+                            <p class="text-slate-500 text-sm font-medium">All caught up!</p>
+                            <p class="text-slate-400 text-xs">No pending feedback to review</p>
+                        </div>
+                    `;
                     return;
                 }
 
                 for (const item of data) {
                     const timeAgo = getTimeAgo(new Date(item.timestamp));
+                    const isHelpful = item.helpful;
                     list.innerHTML += `
-                        <div class="p-5 hover:bg-slate-50 dark:hover:bg-slate-900/40 transition-colors">
-                            <div class="flex justify-between items-start mb-2">
+                        <div class="p-5 border-b border-slate-100 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-900/40 transition-colors group">
+                            <div class="flex justify-between items-start mb-3">
                                 <div class="flex items-center gap-2">
-                                    <span class="material-symbols-outlined text-sm ${item.helpful ? 'text-green-500' : 'text-red-500'}">
-                                        ${item.helpful ? 'thumb_up' : 'thumb_down'}
+                                    <span class="material-symbols-outlined text-sm ${isHelpful ? 'text-green-500' : 'text-red-500'}">
+                                        ${isHelpful ? 'thumb_up' : 'thumb_down'}
+                                    </span>
+                                    <span class="text-xs font-bold ${isHelpful ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}">
+                                        ${isHelpful ? 'Helpful' : 'Not Helpful'}
                                     </span>
                                 </div>
-                                <span class="text-[10px] font-bold text-slate-400">${timeAgo}</span>
+                                <span class="text-[10px] font-bold text-slate-400 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-full">${timeAgo}</span>
                             </div>
-                            <p class="text-xs text-slate-600 dark:text-slate-400 line-clamp-2 leading-relaxed italic">"${escapeHtml(item.query || 'Unknown query')}"</p>
-                            ${item.comment ? `<p class="text-xs text-slate-500 mt-1">${escapeHtml(item.comment)}</p>` : ''}
-                            <div class="mt-4 flex gap-2">
+                            
+                            <div class="bg-slate-50 dark:bg-slate-900/50 rounded-lg p-3 border border-slate-100 dark:border-slate-800 mb-3">
+                                <p class="text-xs font-mono text-slate-600 dark:text-slate-400 line-clamp-2">"${escapeHtml(item.query || 'Unknown query')}"</p>
+                            </div>
+
+                            ${item.comment ? `
+                                <div class="flex gap-2 items-start mb-3 ml-1">
+                                    <span class="material-symbols-outlined text-slate-400 text-sm mt-0.5">chat_bubble</span>
+                                    <p class="text-xs text-slate-600 dark:text-slate-300 italic">"${escapeHtml(item.comment)}"</p>
+                                </div>
+                            ` : ''}
+                            
+                            <div class="flex gap-2 opacity-60 group-hover:opacity-100 transition-opacity">
                                 <button onclick="openReview('${item.id}', '${escapeHtml(item.query || '')}', '${escapeHtml(item.comment || '')}', ${item.helpful})" 
-                                    class="flex-1 bg-primary/10 hover:bg-primary text-primary hover:text-white px-3 py-1.5 rounded-md text-[10px] font-black transition-all">
-                                    REVIEW
+                                    class="w-full bg-slate-900 dark:bg-white text-white dark:text-slate-900 hover:opacity-90 px-3 py-2 rounded-lg text-[10px] font-black transition-all uppercase tracking-wider flex items-center justify-center gap-2">
+                                    <span>Review</span>
+                                    <span class="material-symbols-outlined text-[14px]">arrow_forward</span>
                                 </button>
                             </div>
                         </div>
