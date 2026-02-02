@@ -51,6 +51,7 @@ class HybridRetriever:
             self._client = AsyncQdrantClient(
                 url=self.settings.qdrant_url,
                 api_key=self.settings.qdrant_api_key,
+                timeout=60,  # Increased timeout for large batch upserts
             )
         return self._client
 

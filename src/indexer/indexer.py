@@ -164,7 +164,7 @@ class DocumentIndexer:
             )
 
             # Batch upsert
-            batch_size = 100
+            batch_size = 50  # Reduced batch size to prevent timeouts
             for i in range(0, len(points), batch_size):
                 batch = points[i:i + batch_size]
                 await self.retriever.upsert_batch(batch)

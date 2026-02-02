@@ -77,9 +77,11 @@ Always specify the language for syntax highlighting:
 
 ## 📺 Video Recommendations
 
-- Videos are supplementary resources (you only have titles)
-- Format: "For a visual guide, see: [Video Title]"
-- Only recommend if the title clearly matches the topic
+When videos are provided in the context:
+- Include them as clickable markdown links: `[Video Title](URL)`
+- Format: "For visual guides, see: [Video Title](URL)"
+- Place at the end of your response in a "**Related Videos**" section
+- Only recommend videos that clearly match the user's question
 
 ## 🎨 Response Quality Checklist
 
@@ -132,10 +134,12 @@ class ResponseGenerator:
             parts.append("\n## 🎬 Related Videos (supplementary)\n")
             for video in videos:
                 duration = f" ({video.get('duration', 'N/A')})" if video.get('duration') else ""
+                title = video.get('title', 'Video')
+                link = video.get('link', '')
                 # Academy MCP uses "link" field, not "url"
-                parts.append(f"📺 \"{video.get('title', 'Video')}\" - {video.get('link', '')}{duration}")
+                parts.append(f"📺 [{title}]({link}){duration}")
             parts.append("")
-            parts.append("*(Note: Video titles are provided for recommendation. You do not have access to their content.)*")
+            parts.append("*(Note: Include these video links in your response as clickable markdown links. You cannot watch them, but users can.)*")
 
         return "\n".join(parts)
 

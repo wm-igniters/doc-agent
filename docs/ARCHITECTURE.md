@@ -2,6 +2,13 @@
 
 A simple explanation of how our AI documentation assistant works, layer by layer.
 
+> **📘 For detailed technical explanations**, see [TECHNICAL_DEEP_DIVE.md](./TECHNICAL_DEEP_DIVE.md) which covers:
+> - 3-tier cache implementation details
+> - Dense vs sparse embeddings (BGE + BM25)
+> - RRF fusion algorithm
+> - Bi-encoder vs cross-encoder comparison
+> - Performance characteristics and cost breakdown
+
 ---
 
 ## 🎯 The Problem We're Solving
@@ -10,8 +17,9 @@ A simple explanation of how our AI documentation assistant works, layer by layer
 
 **Challenge:** We have 500+ documentation pages. How do we:
 1. Find the 3-5 most relevant pages out of 500+?
-2. Give the AI only those pages (LLMs have token limits)?
-3. Generate an accurate, cited answer?
+2. Get relevant video tutorials from Academy?
+3. Give the AI only those resources (LLMs have token limits)?
+4. Generate an accurate, cited answer with video links?
 
 ---
 
@@ -25,11 +33,13 @@ A simple explanation of how our AI documentation assistant works, layer by layer
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  LAYER 1: CACHE                                                      │
-│  ┌──────────────┐    ┌──────────────┐                               │
-│  │ Exact Match  │ OR │  Semantic    │  ← "Same question asked       │
-│  │ Cache        │    │  Cache       │     before? Return cached!"   │
-│  └──────────────┘    └──────────────┘                               │
+│  LAYER 1: CACHE (3 Tiers)                                            │
+│  ┌─────────────┐  ┌──────────────┐  ┌──────────────┐               │
+│  │ Tier 1:     │→ │ Tier 2:      │→ │ Tier 3:      │               │
+│  │ Exact Match │  │ Semantic     │  │ Embedding    │               │
+│  │ (instant)   │  │ (similarity) │  │ (reuse)      │               │
+│  └─────────────┘  └──────────────┘  └──────────────┘               │
+│  "Same question asked before? Return cached!"                       │
 └─────────────────────────────────────────────────────────────────────┘
                                 │ Cache Miss
                                 ▼
@@ -44,28 +54,35 @@ A simple explanation of how our AI documentation assistant works, layer by layer
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  LAYER 3: RETRIEVAL                                                  │
-│  ┌─────────────────┐                                                │
-│  │  Qdrant Cloud   │  ← Vector similarity search                    │
-│  │  (Vector DB)    │  ← Returns top 30 similar docs                 │
-│  └─────────────────┘                                                │
+│  LAYER 3: PARALLEL RETRIEVAL ⚡                                      │
+│  ┌─────────────────┐         ┌─────────────────┐                   │
+│  │  Qdrant Cloud   │         │  Academy MCP    │                   │
+│  │  (Vector DB)    │         │  (Video Server) │                   │
+│  │  ↓ Returns 30   │         │  ↓ Returns 3-5  │                   │
+│  │  docs           │         │  videos         │                   │
+│  └─────────────────┘         └─────────────────┘                   │
+│         ↓                             ↓                              │
+│    Documents                      Videos                             │
+│    (both retrieved in parallel - no blocking!)                      │
 └─────────────────────────────────────────────────────────────────────┘
-                                │ 30 documents
+                                │ 30 docs + 3-5 videos
                                 ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  LAYER 4: RERANKING                                                  │
+│  LAYER 4: RERANKING (Documents Only)                                 │
 │  ┌─────────────────┐                                                │
 │  │   Jina Rerank   │  ← Precise relevance scoring                   │
 │  │   (API)         │  ← 30 docs → 5 best docs                       │
 │  └─────────────────┘                                                │
+│  Note: Videos are pre-ranked by Academy MCP, skip reranking         │
 └─────────────────────────────────────────────────────────────────────┘
-                                │ 5 documents
+                                │ 5 documents + videos
                                 ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │  LAYER 5: GENERATION                                                 │
 │  ┌─────────────────┐                                                │
-│  │  Claude LLM     │  ← Reads 5 docs + question                     │
+│  │  Claude LLM     │  ← Reads 5 docs + videos + question            │
 │  │  (Anthropic)    │  ← Generates answer with citations [1][2]      │
+│  │                 │  ← Includes video links in response            │
 │  └─────────────────┘                                                │
 └─────────────────────────────────────────────────────────────────────┘
                                 │
@@ -73,7 +90,11 @@ A simple explanation of how our AI documentation assistant works, layer by layer
 ┌─────────────────────────────────────────────────────────────────────┐
 │                         RESPONSE                                     │
 │  "To create a REST API in WaveMaker, navigate to APIs → REST →     │
-│   New [1]. Define your endpoints and methods [2]..."                │
+│   New [1]. Define your endpoints and methods [2]...                 │
+│                                                                      │
+│   **Related Videos:**                                                │
+│   - [Build REST API](https://academy.wavemaker.com/Watch?wm=CHAP_45)│
+│   - [REST Variables](https://academy.wavemaker.com/Watch?wm=CHAP_67)│
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -90,17 +111,20 @@ A simple explanation of how our AI documentation assistant works, layer by layer
 - Same questions get asked repeatedly
 - Faster response time (~50ms vs ~3s)
 
-**Two types of caching:**
+**Three-tier caching system:**
 
-| Type | How it Works | Example |
-|------|-------------|---------|
-| **Exact Cache** | Hash of question → answer | "What is AIRA?" matches "What is AIRA?" |
-| **Semantic Cache** | Similar meaning → answer | "What is AIRA?" matches "Tell me about AIRA" |
+| Tier | Type | How it Works | Example |
+|------|------|-------------|---------|
+| **1** | **Exact Cache** | Hash of question → answer | "What is AIRA?" matches "What is AIRA?" |
+| **2** | **Semantic Cache** | Similar meaning → answer | "What is AIRA?" matches "Tell me about AIRA" |
+| **3** | **Embedding Cache** | Reuses computed vectors | Same text → Skip re-embedding (24x longer TTL) |
 
-**Example:**
+**Example flow:**
 ```
-User 1: "What is AIRA?" → Processed, cached
-User 2: "Tell me about AIRA" → Semantic match (95% similar) → Return cached
+User 1: "What is AIRA?" → Processed, answer + embedding cached
+User 2: "Tell me about AIRA" → Semantic match (95% similar) → Return cached answer
+User 3: "What is AIRA?" → Exact match → Instant return (~10ms)
+                        → Embedding reused from cache (saves ~50ms)
 ```
 
 **Technology:** Redis (fast in-memory database)
@@ -135,14 +159,30 @@ User 2: "Tell me about AIRA" → Semantic match (95% similar) → Return cached
 
 ---
 
-### Layer 3: Retrieval (Qdrant Vector Database)
+### Layer 3: Parallel Retrieval (Documents + Videos) ⚡
 
-**What it does:** Finds the 30 most similar documents from 500+ indexed docs.
+**What it does:** Simultaneously searches two sources:
+1. **Qdrant** - Finds 30 most similar documentation pages
+2. **Academy MCP** - Finds 3-5 relevant video tutorials
 
-**Why we need it:**
-- Can't send all 500 docs to LLM (too expensive, hits token limits)
-- Vector search is fast (milliseconds for 10,000+ docs)
-- Gets "approximately right" candidates quickly
+**Why parallel execution?**
+```
+❌ Sequential (old way):
+Document search: 2.5s
+   ↓
+Video search: 1.5s
+   ↓
+Total: 4.0s
+
+✅ Parallel (current):
+Document search: 2.5s  ←┐
+                         ├→ Total: 2.5s (wait for slowest)
+Video search: 1.5s      ←┘
+```
+
+**Key benefit:** Video failure doesn't block document retrieval!
+
+#### 3A: Document Retrieval (Qdrant Vector Database)
 
 **How it works:**
 ```
@@ -168,16 +208,46 @@ Query Vector: [0.23, -0.45, 0.89, ...]
 - More candidates = better chance of finding best matches
 - Will be filtered down by reranking next
 
+#### 3B: Video Search (Academy MCP)
+
+**What is MCP?** Model Context Protocol - a standard for AI tools to communicate.
+
+**How it works:**
+```
+Query: "REST API"
+    ↓
+MCP Client connects to Academy server
+    ↓
+Calls tool: wm-academy-semantic-search
+    ↓
+Returns: [
+  {title: "Build REST API", link: "...", code: "CHAP_45"},
+  {title: "REST Variables", link: "...", code: "CHAP_67"},
+  {title: "API Testing", link: "...", code: "CHAP_89"}
+]
+```
+
+**Why MCP instead of REST API?**
+- **Standard protocol** - Works with any MCP-compliant server
+- **Tool discovery** - Can ask "what tools are available?"
+- **Session management** - Persistent connection, auto-reconnect
+- **Timeout handling** - Graceful failure if video service is slow/down
+
+**Smart features:**
+- **Auto-reconnect:** If connection times out, automatically retry
+- **Session refresh:** Recreates connection every 5 minutes
+- **Graceful degradation:** If videos fail, still return documents
+
 ---
 
 ### Layer 4: Reranking (Jina AI)
 
 **What it does:** Precisely re-scores 30 docs to find the 5 best.
 
-**Why we need it:**
-- Embedding search is "approximate" - fast but not perfectly accurate
-- Cross-encoder reranking is slow but much more accurate
-- We only have 5 slots to give to the LLM
+**Why only documents, not videos?**
+- Videos are already pre-ranked by Academy MCP's semantic search
+- Videos are "bonus" content, not primary sources
+- Saves API costs and reduces latency
 
 **The difference:**
 
@@ -212,17 +282,18 @@ After Reranking (Jina scores):
 
 ### Layer 5: Generation (Claude LLM)
 
-**What it does:** Reads the 5 documents and generates a helpful answer.
+**What it does:** Reads the 5 documents + videos and generates a helpful answer.
 
 **Why we need it:**
-- Humans don't want to read 5 documents
+- Humans don't want to read 5 documents + 3 videos
 - LLM synthesizes information into clear answer
-- Adds structure, examples, and citations
+- Adds structure, examples, citations, and video links
 
 **The prompt structure:**
 ```
-SYSTEM: You are a WaveMaker documentation expert. Answer using 
+SYSTEM: You are a WaveMaker documentation expert. Answer using
         the provided context and cite sources using [1], [2], etc.
+        Include video links as clickable markdown.
 
 CONTEXT:
 [1] REST API Development - "To create a REST API, go to..."
@@ -230,6 +301,10 @@ CONTEXT:
 [3] Creating Services - "Services in WaveMaker include..."
 [4] Database REST API - "Database APIs auto-generate CRUD..."
 [5] Import APIs - "External APIs can be imported..."
+
+VIDEOS:
+📺 [Build REST API](https://academy.wavemaker.com/Watch?wm=CHAP_45)
+📺 [REST Variables](https://academy.wavemaker.com/Watch?wm=CHAP_67)
 
 QUESTION: How do I create a REST API in WaveMaker?
 ```
@@ -243,12 +318,16 @@ To create a REST API in WaveMaker, follow these steps:
 3. For database entities, WaveMaker auto-generates CRUD APIs [4]
 
 The API will be available at `/rest/your-endpoint` [1][2].
+
+**Related Videos:**
+- [Build REST API](https://academy.wavemaker.com/Watch?wm=CHAP_45)
+- [REST Variables](https://academy.wavemaker.com/Watch?wm=CHAP_67)
 ```
 
 **Why Claude?**
 - Excellent at following instructions
 - High quality, accurate responses
-- Good at citing sources
+- Good at citing sources and formatting markdown links
 
 ---
 
@@ -264,10 +343,12 @@ The API will be available at `/rest/your-endpoint` [1][2].
 2. EMBEDDING
    └─ Query → [0.12, 0.89, -0.34, ...] (768 dims)
 
-3. RETRIEVAL (Qdrant)
-   └─ Returns 30 docs about security, authentication, users...
+3. PARALLEL RETRIEVAL ⚡
+   ├─ Qdrant: Returns 30 docs about security, authentication, users...
+   └─ Academy MCP: Returns 3 videos about authentication setup
+   (Both complete in ~2s total, not 4s sequential!)
 
-4. RERANKING (Jina)
+4. RERANKING (Jina) - Documents only
    ├─ Input: 30 documents
    └─ Output: Top 5 most relevant
       1. "WaveMaker Security Configuration" (0.89)
@@ -277,17 +358,21 @@ The API will be available at `/rest/your-endpoint` [1][2].
       5. "Login Page Customization" (0.65)
 
 5. GENERATION (Claude)
-   └─ Reads 5 docs, generates:
-      
+   └─ Reads 5 docs + 3 videos, generates:
+
       "To add authentication to your WaveMaker app:
-      
+
       1. Go to **Security** settings [1]
       2. Choose a provider:
          - OpenID/OAuth for Google, Auth0 [2]
          - SAML for enterprise SSO [3]
       3. Configure roles for access control [4]
-      
-      The login page is auto-generated but customizable [5]."
+
+      The login page is auto-generated but customizable [5].
+
+      **Related Videos:**
+      - [Security Setup](https://academy.wavemaker.com/Watch?wm=CHAP_12)
+      - [OAuth Configuration](https://academy.wavemaker.com/Watch?wm=CHAP_34)"
 
 6. CACHE STORE
    └─ Save response for future similar questions
@@ -301,10 +386,12 @@ The API will be available at `/rest/your-endpoint` [1][2].
 |-------|------|---------|-------|
 | Cache | Free | ~5ms | Redis (local or managed) |
 | Embedding | Free | ~100ms | Runs locally |
-| Retrieval | ~$0 | ~200ms | Qdrant free tier |
+| Documents (Qdrant) | ~$0 | ~200ms | Free tier, runs in parallel |
+| Videos (Academy MCP) | ~$0 | ~1.5s | Runs in parallel with docs |
+| **Parallel Layer 3** | **~$0** | **~2s** | **Waits for slowest only** |
 | Reranking | ~$0.0001 | ~500ms | Jina API |
 | Generation | ~$0.005 | ~2-3s | Claude API |
-| **Total** | **~$0.005/query** | **~3-4s** | (cached: free, ~50ms) |
+| **Total** | **~$0.005/query** | **~4-5s** | (cached: free, ~50ms) |
 
 ---
 
@@ -317,7 +404,7 @@ Our architecture follows the **RAG pattern**:
 ```
 Traditional LLM:  Question → LLM → Answer (might hallucinate)
 
-RAG:              Question → Retrieve Docs → LLM + Docs → Grounded Answer
+RAG:              Question → Retrieve Docs + Videos → LLM + Context → Grounded Answer
 ```
 
 **Benefits:**
@@ -325,13 +412,21 @@ RAG:              Question → Retrieve Docs → LLM + Docs → Grounded Answer
 2. **Up-to-date** - Re-index docs when content changes
 3. **Verifiable** - Citations point to source documents
 4. **Cost-effective** - Only process relevant docs, not entire corpus
+5. **Multimedia** - Combines text docs with video tutorials
 
-### Why Not Just Use LLM's Knowledge?
+### Why Parallel Execution?
 
-| Approach | Pros | Cons |
-|----------|------|------|
-| **LLM Knowledge** | Simple | Outdated, may hallucinate, no citations |
-| **RAG (our approach)** | Accurate, current, cited | More complex |
+```
+Sequential Problems:
+❌ Video service slow? Entire query slow.
+❌ Video service down? Entire query fails.
+❌ Wasted time waiting for both sequentially.
+
+Parallel Benefits:
+✅ Total latency = max(docs, videos), not sum
+✅ Video failure doesn't block documents
+✅ Better user experience (faster responses)
+```
 
 ---
 
@@ -342,27 +437,124 @@ RAG:              Question → Retrieve Docs → LLM + Docs → Grounded Answer
 | **Cache** | Redis | Fast, simple, semantic search support |
 | **Embedding** | bge-base-en-v1.5 | Free, local, high quality |
 | **Vector DB** | Qdrant Cloud | Managed, fast, free tier |
+| **Video Search** | Academy MCP | Standards-compliant, auto-reconnect, graceful failure |
 | **Reranker** | Jina AI | API-based (avoids local GPU issues) |
-| **LLM** | Claude | High quality, follows instructions well |
+| **LLM** | Claude Sonnet 4.5 | High quality, follows instructions well, good markdown |
 | **API** | FastAPI | Async, fast, streaming support |
 
 ---
 
 ## 🎓 Key Takeaways for Developers
 
-1. **Embeddings are dimensionality reduction** 
+1. **Embeddings are dimensionality reduction**
    - Text → Fixed-size numbers that capture meaning
 
 2. **Two-stage retrieval is optimal**
    - Fast approximate search first (vectors)
    - Slow precise rerank second (cross-encoder)
 
-3. **Caching saves money and time**
+3. **Parallel execution reduces latency**
+   - Independent operations run concurrently
+   - Failures in one don't block the other
+
+4. **Caching saves money and time**
    - Most questions are repeats or similar
 
-4. **LLMs need context**
+5. **LLMs need context**
    - Don't ask LLM to know everything
-   - Give it relevant documents to read
+   - Give it relevant documents AND videos to reference
 
-5. **Citations build trust**
+6. **Citations build trust**
    - Users can verify answers against sources
+   - Video links provide visual learning paths
+
+7. **Graceful degradation is critical**
+   - If videos fail, still return documentation
+   - System remains useful even with partial failures
+
+---
+
+## 🔍 MCP Integration Details
+
+### What is Model Context Protocol?
+
+**MCP** is like "USB for AI" - a standard protocol that lets AI systems connect to external tools and data sources.
+
+**Our use case:**
+```
+Docs Agent ←──MCP──→ Academy Server
+            (Tool: wm-academy-semantic-search)
+```
+
+### Why MCP over REST API?
+
+| Feature | REST API | MCP |
+|---------|----------|-----|
+| **Discovery** | Hardcoded endpoints | `list_tools()` discovers capabilities |
+| **Protocol** | Custom per API | Standardized JSON-RPC |
+| **Connection** | One-off requests | Persistent session |
+| **Reconnection** | Manual | Auto-reconnect built-in |
+| **Timeouts** | Custom handling | Built into protocol |
+
+### Connection Lifecycle
+
+```
+Query 1 (t=0s):
+  ├─ Create MCP session
+  ├─ Initialize protocol
+  └─ Call tool: wm-academy-semantic-search
+  ✅ Videos returned
+
+Query 2 (t=30s):
+  └─ Reuse existing session
+  ✅ Videos returned (faster, no setup overhead)
+
+Query 3 (t=5min):
+  ├─ Session aged > 5min
+  ├─ Auto-recreate session
+  └─ Call tool
+  ✅ Videos returned
+
+Connection timeout:
+  ├─ Attempt 1: Timeout after 15s
+  ├─ Close stale session
+  ├─ Attempt 2: Retry with new session
+  └─ If still fails: Return docs without videos
+  ✅ User still gets documentation
+```
+
+**Smart features:**
+- Sessions auto-refresh every 5 minutes
+- Connection timeouts: 10s (connect), 15s (tool call)
+- 2 retries with fresh sessions
+- Graceful fallback: docs-only if videos unavailable
+
+---
+
+## 📈 Future Enhancements
+
+### Planned Improvements
+
+1. **Query Understanding**
+   - Intent classification (how-to vs. conceptual vs. troubleshooting)
+   - Auto-detect if user needs video tutorials vs. text docs
+
+2. **Enhanced Video Integration**
+   - Timestamp-specific links (jump to relevant part of video)
+   - Video transcript search for better matching
+
+3. **Feedback Loop**
+   - Track which videos users actually watch
+   - Use feedback to improve video ranking
+
+4. **Multi-modal Responses**
+   - Interactive diagrams from documentation
+   - Code playground integration
+
+5. **Conversation History**
+   - Remember previous questions in session
+   - Provide context-aware follow-ups
+
+---
+
+*Last updated: 2026-02-02*
