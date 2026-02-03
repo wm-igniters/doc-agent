@@ -9,6 +9,7 @@ Tier 3: Embedding cache (reuse computed embeddings)
 import hashlib
 import json
 import logging
+import time
 from typing import Any, Optional
 
 import numpy as np
@@ -28,6 +29,8 @@ class SemanticCache:
         self.settings = get_settings()
         self._client: Optional[redis.Redis] = None
         self._ttl_seconds = self.settings.cache_ttl_hours * 3600
+        self._semantic_index_key = "semantic:index"
+        self._semantic_max_candidates = self.settings.semantic_cache_max_candidates
 
     async def _get_client(self) -> redis.Redis:
         """Get or create Redis client."""
@@ -101,17 +104,23 @@ class SemanticCache:
         try:
             client = await self._get_client()
 
-            # Get all semantic cache entries
-            # In production, use Redis Search or a dedicated vector store
-            keys = await client.keys("semantic:*")
-            if not keys:
+            # Fetch most recent semantic cache entries
+            candidate_keys = await client.zrevrange(
+                self._semantic_index_key,
+                0,
+                self._semantic_max_candidates - 1,
+            )
+            if not candidate_keys:
                 return None
 
-            threshold = self.settings.semantic_cache_threshold
+            # Bulk fetch cached payloads
+            cached_results = await client.mget(candidate_keys)
 
-            for key in keys[:100]:  # Limit to prevent slowdown
-                cached_data = await client.get(key)
+            threshold = self.settings.semantic_cache_threshold
+            for key, cached_data in zip(candidate_keys, cached_results):
                 if not cached_data:
+                    # Remove stale entry from index
+                    await client.zrem(self._semantic_index_key, key)
                     continue
 
                 cached = json.loads(cached_data)
@@ -128,7 +137,6 @@ class SemanticCache:
                         f"Cache hit (semantic, sim={similarity:.3f}): {query[:50]}..."
                     )
                     return cached.get("response")
-
             return None
         except Exception as e:
             logger.warning(f"Semantic cache error: {e}")
@@ -156,6 +164,17 @@ class SemanticCache:
                 self._ttl_seconds,
                 json.dumps(data),
             )
+            # Track entry in sorted index to limit scan range
+            await client.zadd(self._semantic_index_key, {key: time.time()})
+            # Trim index to the most recent N entries
+            index_size = await client.zcard(self._semantic_index_key)
+            if index_size and index_size > self._semantic_max_candidates * 2:
+                excess = index_size - (self._semantic_max_candidates * 2)
+                await client.zremrangebyrank(
+                    self._semantic_index_key,
+                    0,
+                    excess - 1,
+                )
             logger.debug(f"Cached (semantic): {query[:50]}...")
         except Exception as e:
             logger.warning(f"Semantic cache set error: {e}")

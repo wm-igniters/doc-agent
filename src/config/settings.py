@@ -130,6 +130,10 @@ class Settings(BaseSettings):
         default=0.95,
         description="Similarity threshold for semantic cache hits",
     )
+    semantic_cache_max_candidates: int = Field(
+        default=200,
+        description="Number of semantic cache entries to compare per lookup",
+    )
 
     # === Retrieval Configuration ===
     retrieval_top_k: int = Field(
@@ -139,6 +143,10 @@ class Settings(BaseSettings):
     rerank_top_k: int = Field(
         default=5,
         description="Number of documents to pass to LLM after reranking",
+    )
+    reranker_candidates: int = Field(
+        default=12,
+        description="Maximum documents to send to reranker provider",
     )
     reranker_enabled: bool = Field(
         default=True,

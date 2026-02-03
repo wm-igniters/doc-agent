@@ -82,7 +82,7 @@ class Reranker:
                     "Content-Type": "application/json",
                 },
                 json={
-                    "model": "jina-reranker-v2-base-multilingual",
+                    "model": "jina-reranker-v3",
                     "query": query,
                     "top_n": top_k,
                     "documents": doc_texts,

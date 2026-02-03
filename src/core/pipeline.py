@@ -11,6 +11,7 @@ Ties together all layers:
 
 import asyncio
 import logging
+import time
 from typing import Any, AsyncGenerator, Optional
 
 import numpy as np
@@ -63,23 +64,37 @@ class QueryPipeline:
         Returns:
             Dict with answer, sources, videos, cached flag
         """
+        timings: dict[str, float] = {}
+        start_total = time.perf_counter()
+
         # Layer 1: Check exact cache
+        start = time.perf_counter()
         cached = await self.cache.get_exact(query)
+        timings["cache_exact"] = time.perf_counter() - start
         if cached:
             cached["cached"] = True
+            timings["total"] = time.perf_counter() - start_total
+            logger.info(f"Timing(query='{query[:40]}...'): {timings}")
             return cached
 
         # Layer 2: Generate embeddings
+        start = time.perf_counter()
         dense_vector = await self.embedder.embed_query(query)
         sparse_vector = self.embedder.generate_sparse_vector(query)
+        timings["embedding"] = time.perf_counter() - start
 
         # Check semantic cache
+        start = time.perf_counter()
         semantic_cached = await self.cache.get_semantic(query, dense_vector)
+        timings["cache_semantic"] = time.perf_counter() - start
         if semantic_cached:
             semantic_cached["cached"] = True
+            timings["total"] = time.perf_counter() - start_total
+            logger.info(f"Timing(query='{query[:40]}...'): {timings}")
             return semantic_cached
 
         # Layer 3: Retrieve documents and videos in parallel
+        start = time.perf_counter()
         documents_task = self.retriever.search(
             dense_vector=dense_vector,
             sparse_vector=sparse_vector,
@@ -102,15 +117,24 @@ class QueryPipeline:
             logger.error(f"Document retrieval failed ({type(results[0]).__name__}): {results[0]}")
         if not isinstance(results[1], list):
             logger.warning(f"Video search failed ({type(results[1]).__name__}): {results[1]}")
+        timings["retrieval"] = time.perf_counter() - start
 
         # Layer 4: Rerank documents
+        start = time.perf_counter()
         if documents and self.reranker.should_rerank(documents):
+            # Trim candidate list to reduce reranker payload
+            candidate_limit = max(self.settings.reranker_candidates, self.settings.rerank_top_k)
+            documents = documents[:candidate_limit]
             documents = await self.reranker.rerank(query, documents)
         elif documents:
             # Just take top_k without reranking
             documents = documents[:self.settings.rerank_top_k]
+        if documents:
+            documents = documents[:self.settings.rerank_top_k]
+        timings["rerank"] = time.perf_counter() - start
 
         # Layer 5: Generate response
+        start = time.perf_counter()
         if not documents:
             response = {
                 "answer": "I don't have information about this topic in the documentation. Please try rephrasing your question or check the WaveMaker documentation directly.",
@@ -130,10 +154,15 @@ class QueryPipeline:
                 "videos": [v.model_dump() for v in result["videos"]],
                 "cached": False,
             }
+        timings["generation"] = time.perf_counter() - start
 
         # Cache the response
+        start = time.perf_counter()
         await self.cache.set_exact(query, response)
         await self.cache.set_semantic(query, dense_vector, response)
+        timings["cache_write"] = time.perf_counter() - start
+        timings["total"] = time.perf_counter() - start_total
+        logger.info(f"Timing(query='{query[:40]}...'): {timings}")
 
         return response
 
