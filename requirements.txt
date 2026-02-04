@@ -17,7 +17,7 @@ qdrant-client>=1.12.0
 
 # Embeddings (sentence-transformers with ONNX for speed)
 sentence-transformers>=3.3.0
-onnxruntime>=1.19.0
+# onnxruntime>=1.19.0
 transformers>=4.46.0
 tokenizers>=0.20.0
 torch>=2.0.0  # Explicit PyTorch (avoids MLX issues on Apple Silicon)
